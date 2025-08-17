@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Slide Q&A Assistant — Frontend</title>
+  <style>
+    :root{--bg1:#667eea;--bg2:#764ba2;--accent1:#4facfe;--accent2:#00f2fe}
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;min-height:100vh;background:linear-gradient(135deg,var(--bg1),var(--bg2));padding:28px}
+    .card{max-width:900px;margin:0 auto;background:rgba(255,255,255,0.98);border-radius:16px;overflow:hidden;box-shadow:0 20px 40px rgba(0,0,0,.12)}
+    header{padding:28px 36px;background:linear-gradient(135deg,var(--accent1),var(--accent2));color:white}
+    header h1{font-size:1.6rem;margin-bottom:6px}
+    header p{opacity:.95}
+    main{padding:28px 36px}
+    .row{display:flex;gap:18px;align-items:flex-start}
+    .col{flex:1}
+    .upload{border:2px dashed #e6e6e6;padding:18px;border-radius:12px}
+    .file-input{width:100%;padding:12px;border-radius:8px;border:1px solid #ddd}
+    .formats{margin-top:12px;font-size:.92rem;color:#444}
+    textarea{width:100%;min-height:120px;padding:12px;border-radius:8px;border:1px solid #ddd;font-family:inherit}
+    button.primary{background:linear-gradient(135deg,var(--accent1),var(--accent2));color:white;border:none;padding:12px 20px;border-radius:999px;cursor:pointer;font-weight:600}
+    .status{margin-bottom:12px;padding:10px;border-radius:8px;background:#e9f7ff;color:#055;display:none}
+    .answer{background:#f7f9fb;padding:18px;border-radius:10px;border-left:4px solid var(--accent1);margin-top:16px;display:none}
+    .small{font-size:.9rem;color:#666}
+    .hidden{display:none}
+    .progress{height:8px;background:#eee;border-radius:999px;overflow:hidden;margin-top:12px}
+    .progress > span{display:block;height:100%;width:0%;background:linear-gradient(90deg,var(--accent1),var(--accent2));transition:width .3s}
+    .btn-row{display:flex;gap:10px;align-items:center}
+    .hint{font-size:.88rem;color:#444;margin-top:8px}
+    .drop-over{background:rgba(79,172,254,0.06);border-color:var(--accent1)}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <header>
+      <h1>🎯 Slide Q&A Assistant</h1>
+      <p>Drop a file, ask a question — answers powered by your server + OpenAI.</p>
+    </header>
+    
+    <main>
+      <div id="apiStatus" class="status">🔗 Ready (waiting for actions)</div>
+
+      <form id="qaForm">
+        <div class="row">
+          <div class="col upload" id="uploadBox">
+            <label for="fileInput" class="small">Upload file (txt or pdf)</label>
+            <input id="fileInput" class="file-input" type="file" accept=".txt,.pdf" />
+            <div class="formats small">Supported: <strong>.txt</strong>, <strong>.pdf</strong></div>
+            <div id="fileInfo" class="hint hidden"></div>
+            <div id="uploadError" class="hint hidden" style="color:#b33636"></div>
+          </div>
+
+          <div class="col">
+            <label for="question" class="small">Your question</label>
+            <textarea id="question" placeholder="Ask about the uploaded content... e.g. Summarize the main findings"></textarea>
+
+            <div class="btn-row" style="margin-top:12px">
+              <button type="submit" id="askBtn" class="primary">🚀 Get Answer</button>
+              <div class="progress" id="progress" style="flex:1;align-self:center;display:none">
+                <span id="progressBar"></span>
+              </div>
+            </div>
+
+            <div id="hintText" class="hint">Tip: place <code>process.php</code> in the same folder as this HTML and set <code>API_ENDPOINT</code> if needed.</div>
+          </div>
+        </div>
+      </form>
+
+      <div id="loading" class="small hidden">Processing…</div>
+
+      <div id="answerCard" class="answer">
+        <div style="font-weight:700">💡 Answer</div>
+        <pre id="answerText" style="white-space:pre-wrap;margin-top:8px"></pre>
+        <div id="fileDetails" class="small" style="margin-top:12px"></div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // --- CONFIG ---
+    const API_ENDPOINT = 'process.php'; // edit if your PHP is elsewhere
+
+    const fileInput = document.getElementById('fileInput');
+    const questionEl = document.getElementById('question');
+    const askBtn = document.getElementById('askBtn');
+    const apiStatus = document.getElementById('apiStatus');
+    const fileInfo = document.getElementById('fileInfo');
+    const uploadError = document.getElementById('uploadError');
+    const progress = document.getElementById('progress');
+    const progressBar = document.getElementById('progressBar');
+    const loading = document.getElementById('loading');
+    const answerCard = document.getElementById('answerCard');
+    const answerText = document.getElementById('answerText');
+    const fileDetails = document.getElementById('fileDetails');
+    const uploadBox = document.getElementById('uploadBox');
+
+    let currentFile = null;
+    let backendConnected = false;
+
+    // detect file selection
+    fileInput.addEventListener('change', (e) => {
+      const f = e.target.files[0];
+      if (!f) return clearFile();
+      const ext = '.' + f.name.split('.').pop().toLowerCase();
+      if (!['.txt', '.pdf'].includes(ext)) {
+        showUploadError('Unsupported file type');
+        clearFile();
+        return;
+      }
+      currentFile = f;
+      fileInfo.textContent = `Selected: ${f.name} — ${(f.size/1024/1024).toFixed(2)} MB`;
+      fileInfo.classList.remove('hidden');
+      uploadError.classList.add('hidden');
+    });
+
+    function showUploadError(msg){
+      uploadError.textContent = msg; 
+      uploadError.classList.remove('hidden');
+      fileInfo.classList.add('hidden');
+    }
+    
+    function clearFile(){ 
+      currentFile = null; 
+      fileInput.value = ''; 
+      fileInfo.classList.add('hidden'); 
+    }
+
+    // drag & drop
+    ['dragenter','dragover'].forEach(ev => 
+      uploadBox.addEventListener(ev, e => { 
+        e.preventDefault(); 
+        uploadBox.classList.add('drop-over'); 
+      })
+    );
+    
+    ['dragleave','drop'].forEach(ev => 
+      uploadBox.addEventListener(ev, e => { 
+        e.preventDefault(); 
+        uploadBox.classList.remove('drop-over'); 
+      })
+    );
+    
+    uploadBox.addEventListener('drop', e => {
+      const f = e.dataTransfer.files[0];
+      if (f) { 
+        fileInput.files = e.dataTransfer.files; 
+        fileInput.dispatchEvent(new Event('change')); 
+      }
+    });
+
+    // quick backend check (OPTIONS)
+    async function testBackend(){
+      try{
+        const res = await fetch(API_ENDPOINT, { method: 'OPTIONS' });
+        if (res.ok) { 
+          backendConnected = true; 
+          apiStatus.style.display='block'; 
+          apiStatus.textContent='✅ Backend reachable'; 
+          apiStatus.style.background='#e8ffef'; 
+          apiStatus.style.color='#064'; 
+        } else throw new Error(res.status);
+      }catch(err){ 
+        backendConnected = false; 
+        apiStatus.style.display='block'; 
+        apiStatus.textContent=`⚠ Backend not reachable — ${err.message}`; 
+        apiStatus.style.background='#fff4e6'; 
+        apiStatus.style.color='#664'; 
+      }
+    }
+
+    window.addEventListener('load', testBackend);
+
+    // submit handler
+    document.getElementById('qaForm').addEventListener('submit', async (e) =>{
+      e.preventDefault();
+      if (!currentFile) { alert('Please upload a file'); return; }
+      const question = questionEl.value.trim(); 
+      if (!question) { alert('Please write a question'); return; }
+      if (!backendConnected) { 
+        if (!confirm('Backend not detected. Try anyway?')) return; 
+      }
+
+      // prepare
+      askBtn.disabled = true; 
+      progress.style.display='block'; 
+      progressBar.style.width='0%'; 
+      loading.classList.remove('hidden'); 
+      answerCard.style.display='none';
+      
+      const form = new FormData(); 
+      form.append('file', currentFile); 
+      form.append('question', question);
+
+      // progress animation
+      let p=0; 
+      const iv = setInterval(()=>{ 
+        p += Math.random()*12; 
+        if (p>92) p=92; 
+        progressBar.style.width = p + '%'; 
+      }, 400);
+
+      try{
+        const res = await fetch(API_ENDPOINT, { method:'POST', body: form });
+        clearInterval(iv); 
+        progressBar.style.width='100%';
+        if (!res.ok) throw new Error('HTTP '+res.status);
+        
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Unknown error');
+
+        answerText.textContent = data.answer || 'No answer';
+        fileDetails.innerHTML = `<strong>File:</strong> ${data.file_info?.name || 'n/a'} — <strong>chars:</strong> ${data.file_info?.content_length || 0}`;
+        answerCard.style.display='block'; 
+        apiStatus.textContent='🎉 Answer received'; 
+        apiStatus.style.background='#e8ffef';
+      }catch(err){
+        apiStatus.textContent = '❌ ' + err.message; 
+        apiStatus.style.background='#fff0f0'; 
+        apiStatus.style.color='#811';
+        answerText.textContent = 'Error: ' + err.message; 
+        answerCard.style.display='block';
+      }finally{
+        askBtn.disabled=false; 
+        loading.classList.add('hidden'); 
+        setTimeout(()=>{ 
+          progress.style.display='none'; 
+          progressBar.style.width='0%'; 
+        },500);
+      }
+    });
+  </script>
+</body>
+</html>
